@@ -62,8 +62,10 @@ function buildInitialCells(models: PublicModelConfig[], scenarios: ScenarioCard[
   );
 }
 
-function formatProgress(status: "idle" | "running" | "done" | "error"): string {
+function formatProgress(status: "idle" | "warmup" | "running" | "done" | "error"): string {
   switch (status) {
+    case "warmup":
+      return "Warming up";
     case "running":
       return "Running";
     case "done":
@@ -307,7 +309,8 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
   const [cells, setCells] = useState(() => buildInitialCells(allModels, scenarios));
   const cellsRef = useRef(cells);
   const [scoreSummaries, setScoreSummaries] = useState<ScoreSummaryMap>({});
-  const [runnerStatus, setRunnerStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [runnerStatus, setRunnerStatus] = useState<"idle" | "warmup" | "running" | "done" | "error">("idle");
+  const [warmupModelName, setWarmupModelName] = useState<string | null>(null);
   const [currentScenarioId, setCurrentScenarioId] = useState(scenarios[0]?.id ?? "");
   const [focusedScenarioId, setFocusedScenarioId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Array<{ id: string; message: string }>>([]);
@@ -392,6 +395,7 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
     setScoreSummaries({});
     setLogs([]);
     setFailureDetails(null);
+    setWarmupModelName(null);
     setCurrentScenarioId(scenarios[0]?.id ?? "");
     setFocusedScenarioId(null);
   }
@@ -473,8 +477,15 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
         appendLog(`Run started for ${event.models.length} model(s).`);
         break;
       case "scenario_started":
+        setRunnerStatus("running");
+        setWarmupModelName(null);
         setCurrentScenarioId(event.scenarioId);
         appendLog(`Starting ${event.scenarioId} ${event.title}.`);
+        break;
+      case "model_warmup":
+        setRunnerStatus("warmup");
+        setWarmupModelName(event.modelId);
+        appendLog(`${event.modelId}: ${event.message}`);
         break;
       case "model_progress":
         updateCell(event.modelId, event.scenarioId, (previous) => ({
@@ -675,9 +686,9 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
             className="icon-button primary-button"
             type="button"
             onClick={() => startRun()}
-            disabled={allModels.length === 0 || runnerStatus === "running"}
-            aria-label={runnerStatus === "running" ? "Benchmark running" : "Run benchmark"}
-            title={runnerStatus === "running" ? "Benchmark running" : "Run benchmark"}
+            disabled={allModels.length === 0 || runnerStatus === "running" || runnerStatus === "warmup"}
+            aria-label={runnerStatus === "running" || runnerStatus === "warmup" ? "Benchmark running" : "Run benchmark"}
+            title={runnerStatus === "running" || runnerStatus === "warmup" ? "Benchmark running" : "Run benchmark"}
           >
             <Play aria-hidden="true" size={18} />
           </button>
@@ -696,14 +707,30 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
       <section className="scenario-focus">
         <div className="scenario-focus-header">
           <div>
-            <p className="eyebrow">{focusedScenarioId ? "Viewing Scenario" : runnerStatus === "running" ? "Current Scenario" : "Scenario Preview"}</p>
+            <p className="eyebrow">
+              {runnerStatus === "warmup"
+                ? "Loading Model"
+                : focusedScenarioId
+                  ? "Viewing Scenario"
+                  : runnerStatus === "running"
+                    ? "Current Scenario"
+                    : "Scenario Preview"}
+            </p>
             <h2>
-              {detailScenario?.id} · {detailScenario?.title}
+              {runnerStatus === "warmup" && warmupModelName
+                ? warmupModelName
+                : `${detailScenario?.id} · ${detailScenario?.title}`}
             </h2>
           </div>
-          <div className={`status-chip status-${runnerStatus}`}>{runnerStatus === "running" ? "Live" : formatProgress(runnerStatus)}</div>
+          <div className={`status-chip status-${runnerStatus === "warmup" ? "running" : runnerStatus}`}>
+            {runnerStatus === "warmup" ? "Warming up" : runnerStatus === "running" ? "Live" : formatProgress(runnerStatus)}
+          </div>
         </div>
-        <p className="scenario-prompt">{detailScenario?.userMessage}</p>
+        <p className="scenario-prompt">
+          {runnerStatus === "warmup"
+            ? "Sending a lightweight request to load the model into GPU memory. This may take a moment…"
+            : detailScenario?.userMessage}
+        </p>
         <div className="scenario-detail-grid">
           <article className="scenario-detail-card">
             <h3>What this tests</h3>

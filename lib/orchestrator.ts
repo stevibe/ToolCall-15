@@ -5,7 +5,7 @@ import {
   SCENARIOS,
   scoreModelResults
 } from "@/lib/benchmark";
-import { callModel, createInitialMessages, type GenerationParams, type ModelMessage, type ProviderToolCall } from "@/lib/llm-client";
+import { callModel, createInitialMessages, warmupModel, type GenerationParams, type ModelMessage, type ProviderToolCall } from "@/lib/llm-client";
 import type { ModelConfig } from "@/lib/models";
 
 export type RunEvent =
@@ -13,6 +13,11 @@ export type RunEvent =
       type: "run_started";
       models: Array<{ id: string; label: string }>;
       totalScenarios: number;
+    }
+  | {
+      type: "model_warmup";
+      modelId: string;
+      message: string;
     }
   | {
       type: "scenario_started";
@@ -245,30 +250,105 @@ async function runScenarioForModel(
   };
 }
 
-export async function runBenchmark(models: ModelConfig[], emit: Emit, requestedScenarioIds?: string[], params?: GenerationParams): Promise<void> {
-  const scenarios = resolveScenarios(requestedScenarioIds);
-  const resultsByModel: Record<string, ModelScenarioResult[]> = Object.fromEntries(
-    models.map((model) => [model.id, [] as ModelScenarioResult[]])
-  );
+function isWarmupEnabled(): boolean {
+  return process.env.WARMUP_ENABLED?.trim().toLowerCase() === "true";
+}
+
+function isModelFirstOrder(): boolean {
+  return process.env.RUN_ORDER?.trim().toLowerCase() === "model";
+}
+
+async function doWarmup(model: ModelConfig, emit: Emit): Promise<void> {
+  await emit({ type: "model_warmup", modelId: model.id, message: `Warming up ${model.model} (loading into GPU)…` });
+  await warmupModel(model);
+  await emit({ type: "model_warmup", modelId: model.id, message: `${model.model} ready.` });
+}
+
+async function runByScenario(
+  models: ModelConfig[],
+  scenarios: ScenarioDefinition[],
+  resultsByModel: Record<string, ModelScenarioResult[]>,
+  emit: Emit,
+  params?: GenerationParams
+): Promise<void> {
   const cloudModels = models.filter((model) => model.provider === "openrouter");
   const localModels = models.filter((model) => model.provider !== "openrouter");
+  const shouldWarmup = isWarmupEnabled();
 
-  await emit({
-    type: "run_started",
-    models: models.map((model) => ({ id: model.id, label: model.label })),
-    totalScenarios: scenarios.length
-  });
+  const runScenario = async (model: ModelConfig, scenario: ScenarioDefinition) => {
+    const result = await runScenarioForModel(model, scenario, emit, params);
+    return { modelId: model.id, scenarioId: scenario.id, result };
+  };
 
-  try {
-    const runScenario = async (model: ModelConfig, scenario: ScenarioDefinition) => {
-      const result = await runScenarioForModel(model, scenario, emit, params);
-      return { modelId: model.id, scenarioId: scenario.id, result };
-    };
+  const emitResult = async (modelId: string, scenarioId: string, result: ModelScenarioResult) => {
+    resultsByModel[modelId].push(result);
+    await emit({ type: "scenario_result", modelId, scenarioId, result });
+  };
 
-    const emitResult = async (modelId: string, scenarioId: string, result: ModelScenarioResult) => {
-      resultsByModel[modelId].push(result);
-      await emit({ type: "scenario_result", modelId, scenarioId, result });
-    };
+  if (shouldWarmup) {
+    for (const model of localModels) {
+      await doWarmup(model, emit);
+    }
+  }
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await emit({
+      type: "scenario_started",
+      scenarioId: scenario.id,
+      title: scenario.title,
+      index: index + 1,
+      total: scenarios.length
+    });
+
+    const promises: Promise<void>[] = [];
+
+    if (cloudModels.length > 0) {
+      promises.push(
+        (async () => {
+          const results = await Promise.all(cloudModels.map((model) => runScenario(model, scenario)));
+          for (const { modelId, scenarioId, result } of results) {
+            await emitResult(modelId, scenarioId, result);
+          }
+        })()
+      );
+    }
+
+    promises.push(
+      (async () => {
+        for (const model of localModels) {
+          const { modelId, scenarioId, result } = await runScenario(model, scenario);
+          await emitResult(modelId, scenarioId, result);
+        }
+      })()
+    );
+
+    await Promise.all(promises);
+
+    await emit({
+      type: "scenario_finished",
+      scenarioId: scenario.id
+    });
+  }
+}
+
+async function runByModel(
+  models: ModelConfig[],
+  scenarios: ScenarioDefinition[],
+  resultsByModel: Record<string, ModelScenarioResult[]>,
+  emit: Emit,
+  params?: GenerationParams
+): Promise<void> {
+  const shouldWarmup = isWarmupEnabled();
+
+  const emitResult = async (modelId: string, scenarioId: string, result: ModelScenarioResult) => {
+    resultsByModel[modelId].push(result);
+    await emit({ type: "scenario_result", modelId, scenarioId, result });
+  };
+
+  for (const model of models) {
+    if (shouldWarmup && model.provider !== "openrouter") {
+      await doWarmup(model, emit);
+    }
 
     for (const [index, scenario] of scenarios.entries()) {
       await emit({
@@ -279,34 +359,34 @@ export async function runBenchmark(models: ModelConfig[], emit: Emit, requestedS
         total: scenarios.length
       });
 
-      const promises: Promise<void>[] = [];
-
-      if (cloudModels.length > 0) {
-        promises.push(
-          (async () => {
-            const results = await Promise.all(cloudModels.map((model) => runScenario(model, scenario)));
-            for (const { modelId, scenarioId, result } of results) {
-              await emitResult(modelId, scenarioId, result);
-            }
-          })()
-        );
-      }
-
-      promises.push(
-        (async () => {
-          for (const model of localModels) {
-            const { modelId, scenarioId, result } = await runScenario(model, scenario);
-            await emitResult(modelId, scenarioId, result);
-          }
-        })()
-      );
-
-      await Promise.all(promises);
+      const result = await runScenarioForModel(model, scenario, emit, params);
+      await emitResult(model.id, scenario.id, result);
 
       await emit({
         type: "scenario_finished",
         scenarioId: scenario.id
       });
+    }
+  }
+}
+
+export async function runBenchmark(models: ModelConfig[], emit: Emit, requestedScenarioIds?: string[], params?: GenerationParams): Promise<void> {
+  const scenarios = resolveScenarios(requestedScenarioIds);
+  const resultsByModel: Record<string, ModelScenarioResult[]> = Object.fromEntries(
+    models.map((model) => [model.id, [] as ModelScenarioResult[]])
+  );
+
+  await emit({
+    type: "run_started",
+    models: models.map((model) => ({ id: model.id, label: model.label })),
+    totalScenarios: scenarios.length
+  });
+
+  try {
+    if (isModelFirstOrder()) {
+      await runByModel(models, scenarios, resultsByModel, emit, params);
+    } else {
+      await runByScenario(models, scenarios, resultsByModel, emit, params);
     }
 
     const scores = Object.fromEntries(

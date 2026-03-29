@@ -38,6 +38,8 @@ The benchmark spec is documented in [METHODOLOGY.md](./METHODOLOGY.md) and imple
 
 ### Execution model
 
+By default (`RUN_ORDER=scenario`), the runner advances scenario-by-scenario: every model completes the current scenario before the runner moves to the next. When `RUN_ORDER=model`, the runner completes all scenarios for one model before moving to the next, which is ideal for backends that load models on demand.
+
 For every scenario, each model receives:
 
 1. A shared system prompt.
@@ -97,6 +99,29 @@ Notes:
 - Every configured `provider:model` must be unique across both env vars.
 - Provider support is transport-level. Actual benchmark quality still depends on the specific model's tool-calling behavior.
 
+### Local Model Configuration
+
+When benchmarking models served by on-demand backends like [llama-swap](https://github.com/mostlygeek/llama-swap), two additional options help avoid timeouts caused by model loading:
+
+```env
+# Run all 15 scenarios per model before moving to the next.
+# Prevents the backend from swapping models between every scenario.
+RUN_ORDER=model
+
+# Send a lightweight request before each model's run to trigger GPU loading.
+# The warmup uses a 120-second timeout to allow for large model loads.
+WARMUP_ENABLED=true
+```
+
+| Variable | Values | Default | Purpose |
+|---|---|---|---|
+| `RUN_ORDER` | `scenario` / `model` | `scenario` | `scenario` runs each scenario across all models before moving on. `model` runs all scenarios for one model before swapping to the next. |
+| `WARMUP_ENABLED` | `true` / `false` | `false` | Sends a `max_tokens: 1` request to load the model into GPU memory before benchmarking begins. |
+
+The default `RUN_ORDER=scenario` is designed for cloud providers and always-loaded local models. Switch to `RUN_ORDER=model` when the backend loads models on demand, so each model is loaded once and runs all 15 scenarios before being swapped out.
+
+When `WARMUP_ENABLED=true`, the dashboard displays a "Warming up" status with the model name while the backend loads the model. The warmup timeout is 120 seconds — if your models take longer to load, the warmup will fail but the benchmark will continue normally.
+
 ## Getting Started
 
 ### Requirements
@@ -131,7 +156,8 @@ npm run typecheck
 
 ## Dashboard Behavior
 
-- The runner advances scenario-by-scenario, not model-by-model. Every displayed model completes the current scenario before the dashboard moves to the next column.
+- With `RUN_ORDER=scenario` (default), the runner advances scenario-by-scenario. Every displayed model completes the current scenario before the dashboard moves to the next column.
+- With `RUN_ORDER=model`, the runner completes all scenarios for each model before moving to the next. When `WARMUP_ENABLED=true`, the dashboard displays a "Warming up" indicator while the model loads into GPU memory.
 - The run button starts all configured models against all 15 scenarios.
 - The config button opens a modal for generation parameters: `temperature`, `top_p`, `top_k`, and `min_p`.
 - Benchmark config is stored in `localStorage` so the same browser keeps your latest settings between sessions.

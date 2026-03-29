@@ -179,6 +179,48 @@ export async function callModel(model: ModelConfig, messages: ModelMessage[], pa
   };
 }
 
+const WARMUP_TIMEOUT_MS = 120_000;
+
+export async function warmupModel(model: ModelConfig): Promise<void> {
+  const baseUrl = normalizeBaseUrl(model.baseUrl);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  if (model.apiKey) {
+    headers.Authorization = `Bearer ${model.apiKey}`;
+  }
+
+  const body = {
+    model: model.model,
+    temperature: 0,
+    max_tokens: 1,
+    messages: [{ role: "user", content: "Hi" }]
+  };
+
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS)
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as ChatResponse;
+      throw new Error(payload.error?.message || `Warmup failed with ${response.status}.`);
+    }
+
+    await response.json();
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(`Warmup timed out after ${WARMUP_TIMEOUT_MS / 1000}s — model may be too large for available GPU memory.`);
+    }
+
+    throw error;
+  }
+}
+
 export function createInitialMessages(userMessage: string): ModelMessage[] {
   return [
     { role: "system", content: `${SYSTEM_PROMPT}\n\nBenchmark context: today is 2026-03-20 (Friday). Use this date for any relative time request.` },
