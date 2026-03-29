@@ -17,9 +17,15 @@ export type ProviderToolCall = {
   };
 };
 
+export type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+};
+
 export type AssistantResponse = {
   content: string;
   toolCalls: ProviderToolCall[];
+  usage: TokenUsage;
 };
 
 export type GenerationParams = {
@@ -45,6 +51,11 @@ type ChatResponse = {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   error?: {
     message?: string;
   };
@@ -175,8 +186,54 @@ export async function callModel(model: ModelConfig, messages: ModelMessage[], pa
 
   return {
     content: normalizeContent(message.content),
-    toolCalls: normalizeToolCalls(message)
+    toolCalls: normalizeToolCalls(message),
+    usage: {
+      promptTokens: payload.usage?.prompt_tokens ?? 0,
+      completionTokens: payload.usage?.completion_tokens ?? 0
+    }
   };
+}
+
+const WARMUP_TIMEOUT_MS = 120_000;
+
+export async function warmupModel(model: ModelConfig): Promise<void> {
+  const baseUrl = normalizeBaseUrl(model.baseUrl);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  if (model.apiKey) {
+    headers.Authorization = `Bearer ${model.apiKey}`;
+  }
+
+  const body = {
+    model: model.model,
+    temperature: 0,
+    max_tokens: 1,
+    messages: [{ role: "user", content: "Hi" }]
+  };
+
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS)
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as ChatResponse;
+      throw new Error(payload.error?.message || `Warmup failed with ${response.status}.`);
+    }
+
+    await response.json();
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(`Warmup timed out after ${WARMUP_TIMEOUT_MS / 1000}s — model may be too large for available GPU memory.`);
+    }
+
+    throw error;
+  }
 }
 
 export function createInitialMessages(userMessage: string): ModelMessage[] {

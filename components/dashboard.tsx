@@ -29,9 +29,10 @@ type CellState = {
   result?: ModelScenarioResult;
 };
 
-type FailureDetails = {
+type TraceDetails = {
   modelName: string;
   scenarioId: string;
+  status: "pass" | "partial" | "fail";
   summary: string;
   rawLog: string;
 };
@@ -53,6 +54,21 @@ const DEFAULT_GENERATION_CONFIG: GenerationConfig = {
   min_p: undefined
 };
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatTokenRate(tps: number): string {
+  return tps > 0 ? `${tps.toFixed(1)} tok/s` : "—";
+}
+
+function formatTokenCount(count: number): string {
+  if (count === 0) return "—";
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return String(count);
+}
+
 function buildInitialCells(models: PublicModelConfig[], scenarios: ScenarioCard[]): Record<string, Record<string, CellState>> {
   return Object.fromEntries(
     models.map((model) => [
@@ -62,8 +78,10 @@ function buildInitialCells(models: PublicModelConfig[], scenarios: ScenarioCard[
   );
 }
 
-function formatProgress(status: "idle" | "running" | "done" | "error"): string {
+function formatProgress(status: "idle" | "warmup" | "running" | "done" | "error"): string {
   switch (status) {
+    case "warmup":
+      return "Warming up";
     case "running":
       return "Running";
     case "done":
@@ -172,29 +190,33 @@ function parseStoredGenerationConfig(raw: string | null): GenerationConfig | nul
   }
 }
 
-function FailureDialog({ details, onClose }: { details: FailureDetails | null; onClose: () => void }) {
+function TraceDialog({ details, onClose }: { details: TraceDetails | null; onClose: () => void }) {
   if (!details) {
     return null;
   }
 
   const timedOut = isTimeoutSummary(details.summary);
+  const statusLabel =
+    details.status === "pass" ? "Passed" : details.status === "partial" ? "Partial" : timedOut ? "Timed out" : "Failed";
+  const statusClass =
+    details.status === "pass" ? "status-done" : details.status === "partial" ? "status-running" : timedOut ? "status-timeout" : "status-error";
 
   return (
     <div className="dialog-backdrop" role="presentation">
       <div className="dialog-shell trace-dialog" role="dialog" aria-modal="true" aria-labelledby="trace-title">
         <div className="dialog-header">
           <div>
-            <p className="eyebrow">Failure Trace</p>
+            <p className="eyebrow">Scenario Trace</p>
             <h2 id="trace-title">
               {details.scenarioId} · {details.modelName}
             </h2>
           </div>
-          <button className="icon-button ghost-button" type="button" onClick={onClose} aria-label="Close configuration" title="Close">
+          <button className="icon-button ghost-button" type="button" onClick={onClose} aria-label="Close trace" title="Close">
             <X aria-hidden="true" size={18} />
           </button>
         </div>
         <div className="dialog-summary">
-          <div className={`status-chip ${timedOut ? "status-timeout" : "status-error"}`}>{timedOut ? "Timed out" : "Failed"}</div>
+          <div className={`status-chip ${statusClass}`}>{statusLabel}</div>
           <p>{details.summary}</p>
         </div>
         <pre className="trace-log">{details.rawLog}</pre>
@@ -307,11 +329,12 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
   const [cells, setCells] = useState(() => buildInitialCells(allModels, scenarios));
   const cellsRef = useRef(cells);
   const [scoreSummaries, setScoreSummaries] = useState<ScoreSummaryMap>({});
-  const [runnerStatus, setRunnerStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [runnerStatus, setRunnerStatus] = useState<"idle" | "warmup" | "running" | "done" | "error">("idle");
+  const [warmupModelName, setWarmupModelName] = useState<string | null>(null);
   const [currentScenarioId, setCurrentScenarioId] = useState(scenarios[0]?.id ?? "");
   const [focusedScenarioId, setFocusedScenarioId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Array<{ id: string; message: string }>>([]);
-  const [failureDetails, setFailureDetails] = useState<FailureDetails | null>(null);
+  const [traceDetails, setTraceDetails] = useState<TraceDetails | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [genParams, setGenParams] = useState<GenerationConfig>(DEFAULT_GENERATION_CONFIG);
   const storageReadyRef = useRef(false);
@@ -391,7 +414,8 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
     setCells(nextCells);
     setScoreSummaries({});
     setLogs([]);
-    setFailureDetails(null);
+    setTraceDetails(null);
+    setWarmupModelName(null);
     setCurrentScenarioId(scenarios[0]?.id ?? "");
     setFocusedScenarioId(null);
   }
@@ -410,7 +434,7 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
       cellsRef.current = next;
       return next;
     });
-    setFailureDetails((previous) => (previous?.scenarioId === scenarioId ? null : previous));
+    setTraceDetails((previous) => (previous?.scenarioId === scenarioId ? null : previous));
     setCurrentScenarioId(scenarioId);
     setFocusedScenarioId(scenarioId);
   }
@@ -459,6 +483,20 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
                   </span>
                 ))}
               </div>
+              <div className="metrics-strip">
+                <span className="metrics-pill" title="Total benchmark duration">
+                  {formatDuration(summary.metrics.totalDurationMs)}
+                </span>
+                <span className="metrics-pill" title="Average duration per scenario">
+                  ~{formatDuration(summary.metrics.avgDurationMs)}/scenario
+                </span>
+                <span className="metrics-pill" title="Output tokens per second">
+                  {formatTokenRate(summary.metrics.tokensPerSecond)}
+                </span>
+                <span className="metrics-pill" title="Total tokens (prompt + completion)">
+                  {formatTokenCount(summary.metrics.totalPromptTokens + summary.metrics.totalCompletionTokens)} tokens
+                </span>
+              </div>
             </div>
           </article>
         ))}
@@ -473,8 +511,15 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
         appendLog(`Run started for ${event.models.length} model(s).`);
         break;
       case "scenario_started":
+        setRunnerStatus("running");
+        setWarmupModelName(null);
         setCurrentScenarioId(event.scenarioId);
         appendLog(`Starting ${event.scenarioId} ${event.title}.`);
+        break;
+      case "model_warmup":
+        setRunnerStatus("warmup");
+        setWarmupModelName(event.modelId);
+        appendLog(`${event.modelId}: ${event.message}`);
         break;
       case "model_progress":
         updateCell(event.modelId, event.scenarioId, (previous) => ({
@@ -575,22 +620,29 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
     if (cell?.result) {
       const isPass = cell.result.status === "pass";
       const isTimeout = !isPass && isTimeoutSummary(cell.result.summary);
+      const metrics = cell.result.metrics;
+      const cellTitle = metrics
+        ? `${formatDuration(metrics.durationMs)} · ${metrics.turns} turn${metrics.turns !== 1 ? "s" : ""} · ${metrics.toolCallCount} tool call${metrics.toolCallCount !== 1 ? "s" : ""}${metrics.completionTokens > 0 ? ` · ${metrics.completionTokens} tok` : ""}`
+        : undefined;
 
       return (
         <button
           className={`result-icon-button ${isPass ? "result-pass" : isTimeout ? "result-timeout" : "result-fail"}`}
           type="button"
+          title={cellTitle}
           aria-label={`${scenario.id} ${isPass ? "completed" : isTimeout ? "timed out" : "failed"} for ${extractVariantLabel(model.model)}. Show trace.`}
           onClick={() =>
-            setFailureDetails({
+            setTraceDetails({
               modelName: extractVariantLabel(model.model),
               scenarioId: scenario.id,
+              status: cell.result?.status ?? "fail",
               summary: cell.result?.summary ?? "Scenario failed.",
               rawLog: cell.result?.rawLog ?? "No raw log available."
             })
           }
         >
           {isPass ? <CheckIcon /> : isTimeout ? <TimerIcon /> : <CrossIcon />}
+          {metrics && <span className="cell-duration">{formatDuration(metrics.durationMs)}</span>}
         </button>
       );
     }
@@ -675,9 +727,9 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
             className="icon-button primary-button"
             type="button"
             onClick={() => startRun()}
-            disabled={allModels.length === 0 || runnerStatus === "running"}
-            aria-label={runnerStatus === "running" ? "Benchmark running" : "Run benchmark"}
-            title={runnerStatus === "running" ? "Benchmark running" : "Run benchmark"}
+            disabled={allModels.length === 0 || runnerStatus === "running" || runnerStatus === "warmup"}
+            aria-label={runnerStatus === "running" || runnerStatus === "warmup" ? "Benchmark running" : "Run benchmark"}
+            title={runnerStatus === "running" || runnerStatus === "warmup" ? "Benchmark running" : "Run benchmark"}
           >
             <Play aria-hidden="true" size={18} />
           </button>
@@ -696,14 +748,30 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
       <section className="scenario-focus">
         <div className="scenario-focus-header">
           <div>
-            <p className="eyebrow">{focusedScenarioId ? "Viewing Scenario" : runnerStatus === "running" ? "Current Scenario" : "Scenario Preview"}</p>
+            <p className="eyebrow">
+              {runnerStatus === "warmup"
+                ? "Loading Model"
+                : focusedScenarioId
+                  ? "Viewing Scenario"
+                  : runnerStatus === "running"
+                    ? "Current Scenario"
+                    : "Scenario Preview"}
+            </p>
             <h2>
-              {detailScenario?.id} · {detailScenario?.title}
+              {runnerStatus === "warmup" && warmupModelName
+                ? warmupModelName
+                : `${detailScenario?.id} · ${detailScenario?.title}`}
             </h2>
           </div>
-          <div className={`status-chip status-${runnerStatus}`}>{runnerStatus === "running" ? "Live" : formatProgress(runnerStatus)}</div>
+          <div className={`status-chip status-${runnerStatus === "warmup" ? "running" : runnerStatus}`}>
+            {runnerStatus === "warmup" ? "Warming up" : runnerStatus === "running" ? "Live" : formatProgress(runnerStatus)}
+          </div>
         </div>
-        <p className="scenario-prompt">{detailScenario?.userMessage}</p>
+        <p className="scenario-prompt">
+          {runnerStatus === "warmup"
+            ? "Sending a lightweight request to load the model into GPU memory. This may take a moment…"
+            : detailScenario?.userMessage}
+        </p>
         <div className="scenario-detail-grid">
           <article className="scenario-detail-card">
             <h3>What this tests</h3>
@@ -726,7 +794,7 @@ export function Dashboard({ primaryModels, secondaryModels, scenarios, configErr
       {secondaryModels.length > 0 ? renderModelTable("LLM_MODELS_2", displaySecondaryModels) : null}
 
       <ConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} genParams={genParams} setGenParams={setGenParams} />
-      <FailureDialog details={failureDetails} onClose={() => setFailureDetails(null)} />
+      <TraceDialog details={traceDetails} onClose={() => setTraceDetails(null)} />
     </>
   );
 }
