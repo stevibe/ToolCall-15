@@ -17,9 +17,15 @@ export type ProviderToolCall = {
   };
 };
 
+export type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+};
+
 export type AssistantResponse = {
   content: string;
   toolCalls: ProviderToolCall[];
+  usage: TokenUsage;
 };
 
 export type GenerationParams = {
@@ -45,6 +51,11 @@ type ChatResponse = {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   error?: {
     message?: string;
   };
@@ -175,7 +186,11 @@ export async function callModel(model: ModelConfig, messages: ModelMessage[], pa
 
   return {
     content: normalizeContent(message.content),
-    toolCalls: normalizeToolCalls(message)
+    toolCalls: normalizeToolCalls(message),
+    usage: {
+      promptTokens: payload.usage?.prompt_tokens ?? 0,
+      completionTokens: payload.usage?.completion_tokens ?? 0
+    }
   };
 }
 

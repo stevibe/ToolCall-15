@@ -367,6 +367,22 @@ code {
   background: var(--accent-soft);
 }
 
+.metrics-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.metrics-pill {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  cursor: default;
+}
+
 .table-card {
   margin-top: 24px;
   border-radius: var(--radius-xl);
@@ -464,18 +480,29 @@ code {
 
 .result-icon-shell,
 .result-icon-button {
-  width: 42px;
-  height: 42px;
+  width: 48px;
+  min-height: 42px;
   margin: 0 auto;
   border-radius: 14px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 2px;
   border: 1px solid transparent;
 }
 
 .result-icon-button {
   cursor: pointer;
   background: transparent;
+}
+
+.cell-duration {
+  font-size: 0.6rem;
+  line-height: 1;
+  opacity: 0.9;
+  white-space: nowrap;
 }
 
 .result-icon-shell svg,

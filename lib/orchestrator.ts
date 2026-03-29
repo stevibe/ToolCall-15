@@ -136,6 +136,10 @@ async function runScenarioForModel(
   const messages = createInitialMessages(scenario.userMessage);
   const maxTurns = 8;
   const traceLines = ["assistant=starting"];
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let turnCount = 0;
+  const startTime = performance.now();
 
   await emit({
     type: "model_progress",
@@ -176,6 +180,9 @@ async function runScenarioForModel(
         throw lastError ?? new Error("Unknown model execution error.");
       }
 
+      turnCount = turn;
+      totalPromptTokens += response.usage.promptTokens;
+      totalCompletionTokens += response.usage.completionTokens;
       state.assistantMessages.push(response.content);
       messages.push(toAssistantMessage(response));
       traceLines.push(`assistant_turn_${turn}=${response.content || "[tool_calls_only]"}`);
@@ -220,6 +227,7 @@ async function runScenarioForModel(
       }
     }
   } catch (error) {
+    const durationMs = performance.now() - startTime;
     const summary = error instanceof Error ? error.message : "Unknown model execution error.";
     traceLines.push(`error=${summary}`);
 
@@ -228,7 +236,8 @@ async function runScenarioForModel(
       status: "fail",
       points: 0,
       summary,
-      rawLog: formatScenarioTrace(model, scenario, { status: "fail", summary }, traceLines)
+      rawLog: formatScenarioTrace(model, scenario, { status: "fail", summary }, traceLines),
+      metrics: { durationMs, promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, turns: turnCount, toolCallCount: state.toolCalls.length }
     };
   }
 
@@ -240,13 +249,16 @@ async function runScenarioForModel(
 
   const evaluation = scenario.evaluate(state);
 
+  const durationMs = performance.now() - startTime;
+
   return {
     scenarioId: scenario.id,
     status: evaluation.status,
     points: evaluation.points,
     summary: evaluation.summary,
     note: evaluation.note,
-    rawLog: formatScenarioTrace(model, scenario, evaluation, traceLines)
+    rawLog: formatScenarioTrace(model, scenario, evaluation, traceLines),
+    metrics: { durationMs, promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, turns: turnCount, toolCallCount: state.toolCalls.length }
   };
 }
 

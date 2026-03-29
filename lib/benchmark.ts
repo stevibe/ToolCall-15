@@ -1033,6 +1033,14 @@ export const SCENARIO_DISPLAY_DETAILS: Record<string, ScenarioDisplayDetail> = {
   }
 };
 
+export type ScenarioMetrics = {
+  durationMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  turns: number;
+  toolCallCount: number;
+};
+
 export type ModelScenarioResult = {
   scenarioId: string;
   status: ScenarioStatus;
@@ -1040,6 +1048,7 @@ export type ModelScenarioResult = {
   summary: string;
   note?: string;
   rawLog: string;
+  metrics?: ScenarioMetrics;
 };
 
 export type CategoryScore = {
@@ -1050,6 +1059,14 @@ export type CategoryScore = {
   percent: number;
 };
 
+export type AggregateMetrics = {
+  totalDurationMs: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  avgDurationMs: number;
+  tokensPerSecond: number;
+};
+
 export type ModelScoreSummary = {
   scenarioResults: ModelScenarioResult[];
   categoryScores: CategoryScore[];
@@ -1057,6 +1074,7 @@ export type ModelScoreSummary = {
   totalPoints: number;
   maxPoints: number;
   rating: string;
+  metrics: AggregateMetrics;
 };
 
 function ratingForScore(score: number): string {
@@ -1099,12 +1117,26 @@ export function scoreModelResults(results: ModelScenarioResult[]): ModelScoreSum
   );
   const totalPoints = results.reduce((sum, result) => sum + result.points, 0);
 
+  const totalDurationMs = results.reduce((sum, r) => sum + (r.metrics?.durationMs ?? 0), 0);
+  const totalPromptTokens = results.reduce((sum, r) => sum + (r.metrics?.promptTokens ?? 0), 0);
+  const totalCompletionTokens = results.reduce((sum, r) => sum + (r.metrics?.completionTokens ?? 0), 0);
+  const scenariosWithMetrics = results.filter((r) => r.metrics).length;
+  const avgDurationMs = scenariosWithMetrics > 0 ? totalDurationMs / scenariosWithMetrics : 0;
+  const tokensPerSecond = totalDurationMs > 0 ? (totalCompletionTokens / totalDurationMs) * 1000 : 0;
+
   return {
     scenarioResults: results,
     categoryScores,
     finalScore,
     totalPoints,
     maxPoints: SCENARIOS.length * 2,
-    rating: ratingForScore(finalScore)
+    rating: ratingForScore(finalScore),
+    metrics: {
+      totalDurationMs,
+      totalPromptTokens,
+      totalCompletionTokens,
+      avgDurationMs,
+      tokensPerSecond
+    }
   };
 }
