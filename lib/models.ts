@@ -1,4 +1,4 @@
-export type ProviderName = "openrouter" | "ollama" | "llamacpp" | "mlx" | "lmstudio";
+export type ProviderName = "openrouter" | "ollama" | "llamacpp" | "mlx" | "lmstudio" | "opencode" | "vllm";
 
 export type ModelConfig = {
   id: string;
@@ -21,7 +21,7 @@ export type PublicModelConfigGroups = {
   all: PublicModelConfig[];
 };
 
-const PROVIDERS = new Set<ProviderName>(["openrouter", "ollama", "llamacpp", "mlx", "lmstudio"]);
+const PROVIDERS = new Set<ProviderName>(["openrouter", "ollama", "llamacpp", "mlx", "lmstudio", "opencode", "vllm"]);
 
 function normalizeHostBaseUrl(host: string, envName: string): string {
   const trimmed = host.trim().replace(/\/+$/, "");
@@ -68,6 +68,10 @@ function providerLabel(provider: ProviderName): string {
       return "mlx_lm";
     case "lmstudio":
       return "LM Studio";
+    case "opencode":
+      return "OpenCode GO";
+    case "vllm":
+      return "vLLM";
   }
 }
 
@@ -111,29 +115,48 @@ function buildProviderBaseUrl(provider: ProviderName, envName: string): string {
 
       return normalizeHostBaseUrl(host, "LMSTUDIO_HOST");
     }
+    case "opencode": {
+      const host = process.env.OPENCODE_GO_URL?.trim();
+
+      if (!host) {
+        throw new Error(`OPENCODE_GO_URL is required when ${envName} includes an opencode model.`);
+      }
+
+      return normalizeHostBaseUrl(host, "OPENCODE_GO_URL");
+    }
+    case "vllm": {
+      const host = process.env.VLLM_HOST?.trim();
+
+      if (!host) {
+        throw new Error(`VLLM_HOST is required when ${envName} includes a vllm model.`);
+      }
+
+      return normalizeHostBaseUrl(host, "VLLM_HOST");
+    }
   }
 }
 
 function buildProviderApiKey(provider: ProviderName, envName: string): string | undefined {
-  if (provider !== "openrouter") {
-    return undefined;
+  if (provider === "openrouter" || provider === "opencode") {
+    const envVar = provider === "openrouter" ? "OPENROUTER_API_KEY" : "OPENCODE_API_KEY";
+    const apiKey = process.env[envVar]?.trim();
+
+    if (!apiKey) {
+      throw new Error(`${envVar} is required when ${envName} includes an ${provider} model.`);
+    }
+
+    return apiKey;
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-
-  if (!apiKey) {
-    throw new Error(`OPENROUTER_API_KEY is required when ${envName} includes an openrouter model.`);
-  }
-
-  return apiKey;
+  return undefined;
 }
 
 function parseProvider(rawProvider: string, index: number, envName: string): ProviderName {
   const normalized = rawProvider.trim().toLowerCase();
 
   if (!PROVIDERS.has(normalized as ProviderName)) {
-    throw new Error(
-      `${envName} entry ${index + 1} has unsupported provider "${rawProvider}". Use openrouter, ollama, llamacpp, mlx, or lmstudio.`
+      throw new Error(
+      `${envName} entry ${index + 1} has unsupported provider "${rawProvider}". Use openrouter, ollama, llamacpp, mlx, lmstudio, opencode, or vllm.`
     );
   }
 
