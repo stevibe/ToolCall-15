@@ -280,8 +280,8 @@ export async function runBenchmark(models: ModelConfig[], emit: Emit, requestedS
         total: scenarios.length
       });
 
-      const results = await Promise.all(models.map((model) => runScenario(model, scenario)));
-      for (const { modelId, scenarioId, result } of results) {
+      for (const model of models) {
+        const { modelId, scenarioId, result } = await runScenario(model, scenario);
         await emitResult(modelId, scenarioId, result);
       }
 
