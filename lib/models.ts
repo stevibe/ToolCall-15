@@ -115,17 +115,38 @@ function buildProviderBaseUrl(provider: ProviderName, envName: string): string {
 }
 
 function buildProviderApiKey(provider: ProviderName, envName: string): string | undefined {
-  if (provider !== "openrouter") {
-    return undefined;
+  if (provider === "openrouter") {
+    const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+
+    if (!apiKey) {
+      throw new Error(`OPENROUTER_API_KEY is required when ${envName} includes an openrouter model.`);
+    }
+
+    return apiKey;
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-
-  if (!apiKey) {
-    throw new Error(`OPENROUTER_API_KEY is required when ${envName} includes an openrouter model.`);
+  // Local OpenAI-compatible servers may be deployed behind a bearer token
+  // (e.g. vllm-mlx --api-key, llama.cpp server --api-key, LM Studio's auth
+  // toggle, an Ollama reverse-proxy with bearer auth). The key is optional;
+  // when unset the request goes out without an Authorization header, which
+  // is the default for unauthenticated local serving.
+  if (provider === "mlx") {
+    return process.env.MLX_API_KEY?.trim() || undefined;
   }
 
-  return apiKey;
+  if (provider === "llamacpp") {
+    return process.env.LLAMACPP_API_KEY?.trim() || undefined;
+  }
+
+  if (provider === "lmstudio") {
+    return process.env.LMSTUDIO_API_KEY?.trim() || undefined;
+  }
+
+  if (provider === "ollama") {
+    return process.env.OLLAMA_API_KEY?.trim() || undefined;
+  }
+
+  return undefined;
 }
 
 function parseProvider(rawProvider: string, index: number, envName: string): ProviderName {
